@@ -4,6 +4,7 @@ cimport numpy as np
 from libc.math cimport sqrt
 from libc.string cimport memset
 from cpython.mem cimport PyMem_Malloc, PyMem_Free
+from cython.parallel cimport prange
 
 cdef extern from "numpy/npy_math.h":
     cdef enum:
@@ -20,7 +21,7 @@ cdef linkage_distance_update *linkage_methods = [
 include "_structures.pxi"
 
 cdef inline np.npy_int64 condensed_index(np.npy_int64 n, np.npy_int64 i,
-                                         np.npy_int64 j):
+                                         np.npy_int64 j) nogil:
     """
     Calculate the condensed index of element (i, j) in an n x n condensed
     matrix.
@@ -867,7 +868,8 @@ def fast_linkage(double[:] dists, int n, int method):
         cluster_id[y] = n + k  # Update ID of y.
 
         # Update the distance matrix.
-        for z in range(n):
+        # for z in range(n):
+        for z in prange(n, nogil=True):
             nz = size[z]
             if nz == 0 or z == y:
                 continue
@@ -878,7 +880,8 @@ def fast_linkage(double[:] dists, int n, int method):
 
         # Reassign neighbor candidates from x to y.
         # This reassignment is just a (logical) guess.
-        for z in range(x):
+        # for z in range(x):
+        for z in prange(x, nogil=True):
             if size[z] > 0 and neighbor[z] == x:
                 neighbor[z] = y
 
@@ -933,14 +936,16 @@ def nn_chain(double[:] dists, int n, int method):
 
     # Variables to store neighbors chain.
     cdef int[:] cluster_chain = np.ndarray(n, dtype=np.intc)
-    cdef int chain_length = 0
+    # cdef int chain_length = 0
+    cdef int[:] chain_length = np.zeros(n, dtype=np.intc)
 
     cdef int i, j, k, x, y, nx, ny, ni
     cdef double dist, current_min
 
-    for k in range(n - 1):
-        if chain_length == 0:
-            chain_length = 1
+    # for k in range(n - 1):
+    for k in prange(n - 1, nogil=True):
+        if chain_length[k] == 0:
+            chain_length[k] = 1
             for i in range(n):
                 if size[i] > 0:
                     cluster_chain[0] = i
@@ -948,12 +953,12 @@ def nn_chain(double[:] dists, int n, int method):
 
         # Go through chain of neighbors until two mutual neighbors are found.
         while True:
-            x = cluster_chain[chain_length - 1]
+            x = cluster_chain[chain_length[k] - 1]
 
             # We want to prefer the previous element in the chain as the
             # minimum, to avoid potentially going in cycles.
-            if chain_length > 1:
-                y = cluster_chain[chain_length - 2]
+            if chain_length[k] > 1:
+                y = cluster_chain[chain_length[k] - 2]
                 current_min = D[condensed_index(n, x, y)]
             else:
                 current_min = NPY_INFINITYF
@@ -967,14 +972,15 @@ def nn_chain(double[:] dists, int n, int method):
                     current_min = dist
                     y = i
 
-            if chain_length > 1 and y == cluster_chain[chain_length - 2]:
+            if chain_length[k] > 1 and y == cluster_chain[chain_length[k] - 2]:
                 break
 
-            cluster_chain[chain_length] = y
-            chain_length += 1
+            cluster_chain[chain_length[k]] = y
+            chain_length[k] += 1
 
         # Merge clusters x and y and pop them from stack.
-        chain_length -= 2
+        # chain_length[k] -= 2
+        chain_length[k] += -2
 
         # This is a convention used in fastcluster.
         if x > y:
